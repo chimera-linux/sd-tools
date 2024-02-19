@@ -1,0 +1,344 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
+
+#include <errno.h>
+#include <stdbool.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+
+#include "acl-util.h"
+#include "alloc-util.h"
+#include "errno-util.h"
+#include "string-util.h"
+#include "strv.h"
+#include "user-util.h"
+
+#if HAVE_ACL
+
+int calc_acl_mask_if_needed(acl_t *acl_p) {
+        acl_entry_t i;
+        int r;
+        bool need = false;
+
+        assert(acl_p);
+
+        for (r = acl_get_entry(*acl_p, ACL_FIRST_ENTRY, &i);
+             r > 0;
+             r = acl_get_entry(*acl_p, ACL_NEXT_ENTRY, &i)) {
+                acl_tag_t tag;
+
+                if (acl_get_tag_type(i, &tag) < 0)
+                        return -errno;
+
+                if (tag == ACL_MASK)
+                        return 0;
+
+                if (IN_SET(tag, ACL_USER, ACL_GROUP))
+                        need = true;
+        }
+        if (r < 0)
+                return -errno;
+
+        if (need && acl_calc_mask(acl_p) < 0)
+                return -errno;
+
+        return need;
+}
+
+int add_base_acls_if_needed(acl_t *acl_p, const char *path) {
+        acl_entry_t i;
+        int r;
+        bool have_user_obj = false, have_group_obj = false, have_other = false;
+        struct stat st;
+        _cleanup_(acl_freep) acl_t basic = NULL;
+
+        assert(acl_p);
+        assert(path);
+
+        for (r = acl_get_entry(*acl_p, ACL_FIRST_ENTRY, &i);
+             r > 0;
+             r = acl_get_entry(*acl_p, ACL_NEXT_ENTRY, &i)) {
+                acl_tag_t tag;
+
+                if (acl_get_tag_type(i, &tag) < 0)
+                        return -errno;
+
+                if (tag == ACL_USER_OBJ)
+                        have_user_obj = true;
+                else if (tag == ACL_GROUP_OBJ)
+                        have_group_obj = true;
+                else if (tag == ACL_OTHER)
+                        have_other = true;
+                if (have_user_obj && have_group_obj && have_other)
+                        return 0;
+        }
+        if (r < 0)
+                return -errno;
+
+        r = stat(path, &st);
+        if (r < 0)
+                return -errno;
+
+        basic = acl_from_mode(st.st_mode);
+        if (!basic)
+                return -errno;
+
+        for (r = acl_get_entry(basic, ACL_FIRST_ENTRY, &i);
+             r > 0;
+             r = acl_get_entry(basic, ACL_NEXT_ENTRY, &i)) {
+                acl_tag_t tag;
+                acl_entry_t dst;
+
+                if (acl_get_tag_type(i, &tag) < 0)
+                        return -errno;
+
+                if ((tag == ACL_USER_OBJ && have_user_obj) ||
+                    (tag == ACL_GROUP_OBJ && have_group_obj) ||
+                    (tag == ACL_OTHER && have_other))
+                        continue;
+
+                r = acl_create_entry(acl_p, &dst);
+                if (r < 0)
+                        return -errno;
+
+                r = acl_copy_entry(dst, i);
+                if (r < 0)
+                        return -errno;
+        }
+        if (r < 0)
+                return -errno;
+        return 0;
+}
+
+int parse_acl(
+                const char *text,
+                acl_t *ret_acl_access,
+                acl_t *ret_acl_access_exec, /* extra rules to apply to inodes subject to uppercase X handling */
+                acl_t *ret_acl_default,
+                bool want_mask) {
+
+        _cleanup_strv_free_ char **a = NULL, **e = NULL, **d = NULL, **split = NULL;
+        _cleanup_(acl_freep) acl_t a_acl = NULL, e_acl = NULL, d_acl = NULL;
+        int r;
+
+        assert(text);
+        assert(ret_acl_access);
+        assert(ret_acl_access_exec);
+        assert(ret_acl_default);
+
+        split = strv_split(text, ",");
+        if (!split)
+                return -ENOMEM;
+
+        STRV_FOREACH(entry, split) {
+                _cleanup_strv_free_ char **entry_split = NULL;
+                _cleanup_free_ char *entry_join = NULL;
+                int n;
+
+                n = strv_split_full(&entry_split, *entry, ":", EXTRACT_DONT_COALESCE_SEPARATORS|EXTRACT_RETAIN_ESCAPE);
+                if (n < 0)
+                        return n;
+
+                if (n < 3 || n > 4)
+                        return -EINVAL;
+
+                string_replace_char(entry_split[n-1], 'X', 'x');
+
+                if (n == 4) {
+                        if (!STR_IN_SET(entry_split[0], "default", "d"))
+                                return -EINVAL;
+
+                        entry_join = strv_join(entry_split + 1, ":");
+                        if (!entry_join)
+                                return -ENOMEM;
+
+                        r = strv_consume(&d, TAKE_PTR(entry_join));
+                } else { /* n == 3 */
+                        entry_join = strv_join(entry_split, ":");
+                        if (!entry_join)
+                                return -ENOMEM;
+
+                        if (!streq(*entry, entry_join))
+                                r = strv_consume(&e, TAKE_PTR(entry_join));
+                        else
+                                r = strv_consume(&a, TAKE_PTR(entry_join));
+                }
+                if (r < 0)
+                        return r;
+        }
+
+        if (!strv_isempty(a)) {
+                _cleanup_free_ char *join = NULL;
+
+                join = strv_join(a, ",");
+                if (!join)
+                        return -ENOMEM;
+
+                a_acl = acl_from_text(join);
+                if (!a_acl)
+                        return -errno;
+
+                if (want_mask) {
+                        r = calc_acl_mask_if_needed(&a_acl);
+                        if (r < 0)
+                                return r;
+                }
+        }
+
+        if (!strv_isempty(e)) {
+                _cleanup_free_ char *join = NULL;
+
+                join = strv_join(e, ",");
+                if (!join)
+                        return -ENOMEM;
+
+                e_acl = acl_from_text(join);
+                if (!e_acl)
+                        return -errno;
+
+                /* The mask must be calculated after deciding whether the execute bit should be set. */
+        }
+
+        if (!strv_isempty(d)) {
+                _cleanup_free_ char *join = NULL;
+
+                join = strv_join(d, ",");
+                if (!join)
+                        return -ENOMEM;
+
+                d_acl = acl_from_text(join);
+                if (!d_acl)
+                        return -errno;
+
+                if (want_mask) {
+                        r = calc_acl_mask_if_needed(&d_acl);
+                        if (r < 0)
+                                return r;
+                }
+        }
+
+        *ret_acl_access = TAKE_PTR(a_acl);
+        *ret_acl_access_exec = TAKE_PTR(e_acl);
+        *ret_acl_default = TAKE_PTR(d_acl);
+
+        return 0;
+}
+
+static int acl_entry_equal(acl_entry_t a, acl_entry_t b) {
+        acl_tag_t tag_a, tag_b;
+
+        if (acl_get_tag_type(a, &tag_a) < 0)
+                return -errno;
+
+        if (acl_get_tag_type(b, &tag_b) < 0)
+                return -errno;
+
+        if (tag_a != tag_b)
+                return false;
+
+        switch (tag_a) {
+        case ACL_USER_OBJ:
+        case ACL_GROUP_OBJ:
+        case ACL_MASK:
+        case ACL_OTHER:
+                /* can have only one of those */
+                return true;
+        case ACL_USER: {
+                _cleanup_(acl_free_uid_tpp) uid_t *uid_a = NULL, *uid_b = NULL;
+
+                uid_a = acl_get_qualifier(a);
+                if (!uid_a)
+                        return -errno;
+
+                uid_b = acl_get_qualifier(b);
+                if (!uid_b)
+                        return -errno;
+
+                return *uid_a == *uid_b;
+        }
+        case ACL_GROUP: {
+                _cleanup_(acl_free_gid_tpp) gid_t *gid_a = NULL, *gid_b = NULL;
+
+                gid_a = acl_get_qualifier(a);
+                if (!gid_a)
+                        return -errno;
+
+                gid_b = acl_get_qualifier(b);
+                if (!gid_b)
+                        return -errno;
+
+                return *gid_a == *gid_b;
+        }
+        default:
+                assert_not_reached();
+        }
+}
+
+static int find_acl_entry(acl_t acl, acl_entry_t entry, acl_entry_t *ret) {
+        acl_entry_t i;
+        int r;
+
+        for (r = acl_get_entry(acl, ACL_FIRST_ENTRY, &i);
+             r > 0;
+             r = acl_get_entry(acl, ACL_NEXT_ENTRY, &i)) {
+
+                r = acl_entry_equal(i, entry);
+                if (r < 0)
+                        return r;
+                if (r > 0) {
+                        if (ret)
+                                *ret = i;
+                        return 0;
+                }
+        }
+        if (r < 0)
+                return -errno;
+
+        return -ENOENT;
+}
+
+int acls_for_file(const char *path, acl_type_t type, acl_t acl, acl_t *ret) {
+        _cleanup_(acl_freep) acl_t applied = NULL;
+        acl_entry_t i;
+        int r;
+
+        assert(path);
+
+        applied = acl_get_file(path, type);
+        if (!applied)
+                return -errno;
+
+        for (r = acl_get_entry(acl, ACL_FIRST_ENTRY, &i);
+             r > 0;
+             r = acl_get_entry(acl, ACL_NEXT_ENTRY, &i)) {
+
+                acl_entry_t j;
+
+                r = find_acl_entry(applied, i, &j);
+                if (r == -ENOENT) {
+                        if (acl_create_entry(&applied, &j) < 0)
+                                return -errno;
+                } else if (r < 0)
+                        return r;
+
+                if (acl_copy_entry(j, i) < 0)
+                        return -errno;
+        }
+        if (r < 0)
+                return -errno;
+
+        if (ret)
+                *ret = TAKE_PTR(applied);
+
+        return 0;
+}
+
+/* POSIX says that ACL_{READ,WRITE,EXECUTE} don't have to be bitmasks. But that is a natural thing to do and
+ * all extant implementations do it. Let's make sure that we fail verbosely in the (imho unlikely) scenario
+ * that we get a new implementation that does not satisfy this. */
+assert_cc(!(ACL_READ & ACL_WRITE));
+assert_cc(!(ACL_WRITE & ACL_EXECUTE));
+assert_cc(!(ACL_EXECUTE & ACL_READ));
+assert_cc((unsigned) ACL_READ == ACL_READ);
+assert_cc((unsigned) ACL_WRITE == ACL_WRITE);
+assert_cc((unsigned) ACL_EXECUTE == ACL_EXECUTE);
+#endif

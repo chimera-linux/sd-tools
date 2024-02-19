@@ -1,0 +1,2 @@
+option('acl', type: 'feature', description: 'libacl support')
+option('tests', type: 'boolean', value: true, description: 'enable testing')
