@@ -329,3 +329,92 @@ int cat_files(const char *file, char **dropins, CatFlags flags) {
 
         return 0;
 }
+
+int conf_file_read(
+                const char *root,
+                const char **config_dirs,
+                const char *fn,
+                parse_line_t parse_line,
+                void *userdata,
+                bool ignore_enoent,
+                bool *invalid_config) {
+
+        _cleanup_fclose_ FILE *_f = NULL;
+        _cleanup_free_ char *_fn = NULL;
+        unsigned v = 0;
+        FILE *f;
+        int r = 0;
+
+        assert(fn);
+
+        if (streq(fn, "-")) {
+                f = stdin;
+                fn = "<stdin>";
+
+                log_debug("Reading config from stdin...");
+
+        } else if (is_path(fn)) {
+                r = path_make_absolute_cwd(fn, &_fn);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to make path absolute: %m");
+                fn = _fn;
+
+                f = _f = fopen(fn, "re");
+                if (!_f)
+                        r = -errno;
+                else
+                        log_debug("Reading config file \"%s\"...", fn);
+
+        } else {
+                r = search_and_fopen_re(fn, root, config_dirs, &_f, &_fn);
+                if (r >= 0) {
+                        f = _f;
+                        fn = _fn;
+                        log_debug("Reading config file \"%s\"...", fn);
+                }
+        }
+
+        if (r == -ENOENT && ignore_enoent) {
+                log_debug_errno(r, "Failed to open \"%s\", ignoring: %m", fn);
+                return 0; /* No error, but nothing happened. */
+        }
+        if (r < 0)
+                return log_error_errno(r, "Failed to read '%s': %m", fn);
+
+        r = 1;  /* We entered the part where we may modify state. */
+
+        for (;;) {
+                _cleanup_free_ char *line = NULL;
+                bool invalid_line = false;
+                int k;
+
+                k = read_stripped_line(f, LONG_LINE_MAX, &line);
+                if (k < 0)
+                        return log_error_errno(k, "Failed to read '%s': %m", fn);
+                if (k == 0)
+                        break;
+
+                v++;
+
+                if (IN_SET(line[0], 0, '#'))
+                        continue;
+
+                k = parse_line(fn, v, line, invalid_config ? &invalid_line : NULL, userdata);
+                if (k < 0 && invalid_line)
+                        /* Allow reporting with a special code if the caller requested this. */
+                        *invalid_config = true;
+                else {
+                        /* The first error, if any, becomes our return value. */
+                        if (r >= 0 && k < 0)
+                                r = k;
+                }
+        }
+
+        if (ferror(f)) {
+                int k = log_error_errno(SYNTHETIC_ERRNO(EIO), "Failed to read from file %s.", fn);
+                if (r >= 0)
+                        r = k;
+        }
+
+        return r;
+}

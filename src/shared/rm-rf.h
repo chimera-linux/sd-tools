@@ -10,8 +10,8 @@
 typedef enum RemoveFlags {
         REMOVE_ROOT             = 1 << 1, /* Remove the specified directory itself too, not just the contents of it */
         REMOVE_SUBVOLUME        = 1 << 2, /* Drop btrfs subvolumes in the tree too */
-        REMOVE_CHMOD            = 1 << 4, /* chmod() for write access if we cannot delete or access something */
-        REMOVE_CHMOD_RESTORE    = 1 << 5, /* Restore the old mode before returning */
+        REMOVE_CHMOD            = 1 << 3, /* chmod() for write access if we cannot delete or access something */
+        REMOVE_CHMOD_RESTORE    = 1 << 4, /* Restore the old mode before returning */
 } RemoveFlags;
 
 int unlinkat_harder(int dfd, const char *filename, int unlink_flags, RemoveFlags remove_flags);

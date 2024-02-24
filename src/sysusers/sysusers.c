@@ -743,6 +743,7 @@ static int putgrent_with_members(
                 FILE *group) {
 
         char **a;
+        int r;
 
         assert(c);
         assert(gr);
@@ -761,15 +762,15 @@ static int putgrent_with_members(
                         if (strv_contains(l, *i))
                                 continue;
 
-                        if (strv_extend(&l, *i) < 0)
-                                return -ENOMEM;
+                        r = strv_extend(&l, *i);
+                        if (r < 0)
+                                return r;
 
                         added = true;
                 }
 
                 if (added) {
                         struct group t;
-                        int r;
 
                         strv_uniq(l);
                         strv_sort(l);
@@ -792,6 +793,7 @@ static int putsgent_with_members(
                 FILE *gshadow) {
 
         char **a;
+        int r;
 
         assert(sg);
         assert(gshadow);
@@ -809,15 +811,15 @@ static int putsgent_with_members(
                         if (strv_contains(l, *i))
                                 continue;
 
-                        if (strv_extend(&l, *i) < 0)
-                                return -ENOMEM;
+                        r = strv_extend(&l, *i);
+                        if (r < 0)
+                                return r;
 
                         added = true;
                 }
 
                 if (added) {
                         struct sgrp t;
-                        int r;
 
                         strv_uniq(l);
                         strv_sort(l);
@@ -2188,11 +2190,13 @@ static bool valid_user_group_name(const char *u) {
 }
 
 static int parse_line(
-                Context *c,
                 const char *fname,
                 unsigned line,
-                const char *buffer) {
+                const char *buffer,
+                bool *invalid_config,
+                void *context) {
 
+        Context *c = ASSERT_PTR(context);
         _cleanup_free_ char *action = NULL,
                 *name = NULL, *resolved_name = NULL,
                 *id = NULL, *resolved_id = NULL,
@@ -2205,10 +2209,10 @@ static int parse_line(
         int r;
         const char *p;
 
-        assert(c);
         assert(fname);
         assert(line >= 1);
         assert(buffer);
+        assert(!invalid_config); /* We don't support invalid_config yet. */
 
         const Specifier specifier_table[] = {
                 { 'a', specifier_architecture,     NULL },
@@ -2477,57 +2481,14 @@ ext_done:
 }
 
 static int read_config_file(Context *c, const char *fn, bool ignore_enoent) {
-        _cleanup_fclose_ FILE *rf = NULL;
-        _cleanup_free_ char *pp = NULL;
-        FILE *f = NULL;
-        unsigned v = 0;
-        int r = 0;
-
-        assert(c);
-        assert(fn);
-
-        if (streq(fn, "-"))
-                f = stdin;
-        else {
-                r = search_and_fopen_re(fn, arg_root, (const char**) CONF_PATHS_STRV("sysusers.d"), &rf, &pp);
-                if (r < 0) {
-                        if (ignore_enoent && r == -ENOENT)
-                                return 0;
-
-                        return log_error_errno(r, "Failed to open '%s', ignoring: %m", fn);
-                }
-
-                f = rf;
-                fn = pp;
-        }
-
-        for (;;) {
-                _cleanup_free_ char *line = NULL;
-                int k;
-
-                k = read_stripped_line(f, LONG_LINE_MAX, &line);
-                if (k < 0)
-                        return log_error_errno(k, "Failed to read '%s': %m", fn);
-                if (k == 0)
-                        break;
-
-                v++;
-
-                if (IN_SET(line[0], 0, '#'))
-                        continue;
-
-                k = parse_line(c, fn, v, line);
-                if (k < 0 && r == 0)
-                        r = k;
-        }
-
-        if (ferror(f)) {
-                log_error_errno(errno, "Failed to read from file %s: %m", fn);
-                if (r == 0)
-                        r = -EIO;
-        }
-
-        return r;
+        return conf_file_read(
+                        arg_root,
+                        (const char**) CONF_PATHS_STRV("sysusers.d"),
+                        ASSERT_PTR(fn),
+                        parse_line,
+                        ASSERT_PTR(c),
+                        ignore_enoent,
+                        /* invalid_config= */ NULL);
 }
 
 static int cat_config(void) {
@@ -2616,10 +2577,12 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
 
                 case ARG_REPLACE:
-                        if (!path_is_absolute(optarg) ||
-                            !endswith(optarg, ".conf"))
+                        if (!path_is_absolute(optarg))
                                 return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
-                                                       "The argument to --replace= must an absolute path to a config file");
+                                                       "The argument to --replace= must be an absolute path.");
+                        if (!endswith(optarg, ".conf"))
+                                return log_error_errno(SYNTHETIC_ERRNO(EINVAL),
+                                                       "The argument to --replace= must have the extension '.conf'.");
 
                         arg_replace = optarg;
                         break;
@@ -2659,7 +2622,7 @@ static int parse_arguments(Context *c, char **args) {
         STRV_FOREACH(arg, args) {
                 if (arg_inline)
                         /* Use (argument):n, where n==1 for the first positional arg */
-                        r = parse_line(c, "(argument)", pos, *arg);
+                        r = parse_line("(argument)", pos, *arg, /* invalid_config= */ NULL, c);
                 else
                         r = read_config_file(c, *arg, /* ignore_enoent= */ false);
                 if (r < 0)

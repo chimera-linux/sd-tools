@@ -18,3 +18,19 @@ typedef enum CatFlags {
 } CatFlags;
 
 int cat_files(const char *file, char **dropins, CatFlags flags);
+
+typedef int parse_line_t(
+                const char *fname,
+                unsigned line,
+                const char *buffer,
+                bool *invalid_config,
+                void *userdata);
+
+int conf_file_read(
+                const char *root,
+                const char **config_dirs,
+                const char *fn,
+                parse_line_t parse_line,
+                void *userdata,
+                bool ignore_enoent,
+                bool *invalid_config);
