@@ -164,9 +164,6 @@ int fchmod_opath(int fd, mode_t m) {
 
         assert(fd >= 0);
 
-        if (!IN_SET(errno, ENOSYS, EPERM)) /* Some container managers block unknown syscalls with EPERM */
-                return -errno;
-
         if (chmod(FORMAT_PROC_FD_PATH(fd), m) < 0) {
                 if (errno != ENOENT)
                         return -errno;
