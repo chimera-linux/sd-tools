@@ -14,3 +14,6 @@ and so on are properly supported.
 
 It is currently work in progress so some parts are not entirely flexible
 and other parts such as man pages are still missing.
+
+The codebase is originally derived from systemd 255, with changes imported
+as necessary.

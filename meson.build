@@ -1,5 +1,5 @@
 project('sd-tools', 'c',
-        version : '255',
+        version : '0.99.0',
         license : 'LGPLv2+',
         default_options: [
                 'c_std=gnu11',
