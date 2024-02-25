@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # SPDX-License-Identifier: LGPL-2.1-or-later
 set -e
 
@@ -19,8 +19,10 @@ trap "rm -rf '$TESTDIR'" EXIT INT QUIT PIPE
 prepare_testdir() {
     mkdir -p "$TESTDIR/etc/sysusers.d/"
     mkdir -p "$TESTDIR/usr/lib/sysusers.d/"
-    rm -f "$TESTDIR"/etc/*{passwd,group,shadow}
-    for i in $1.initial-{passwd,group,shadow}; do
+    rm -f "$TESTDIR"/etc/*passwd
+    rm -f "$TESTDIR"/etc/*group
+    rm -f "$TESTDIR"/etc/*shadow
+    for i in $1.initial-passwd $1.initial-group $1.initial-shadow; do
         test -f "$i" && cp "$i" "$TESTDIR/etc/${i#*.initial-}"
     done
     return 0
@@ -35,15 +37,22 @@ preprocess() {
 }
 
 compare() {
-    if ! diff -u "$TESTDIR/etc/passwd" <(preprocess "$1.expected-passwd" "$3"); then
+    TMPF=$(mktemp)
+    preprocess "$1.expected-passwd" "$3" > $TMPF
+    if ! diff -u "$TESTDIR/etc/passwd" "$TMPF"; then
         echo "**** Unexpected output for $f $2"
+        rm -f "$TMPF"
         exit 1
     fi
 
-    if ! diff -u "$TESTDIR/etc/group" <(preprocess "$1.expected-group" "$3"); then
+    preprocess "$1.expected-group" "$3" > $TMPF
+    if ! diff -u "$TESTDIR/etc/group" "$TMPF"; then
         echo "**** Unexpected output for $f $2"
+        rm -f "$TMPF"
         exit 1
     fi
+
+    rm -f "$TMPF"
 }
 
 rm -f "$TESTDIR"/etc/sysusers.d/* "$TESTDIR"/usr/lib/sysusers.d/*
