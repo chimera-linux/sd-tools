@@ -5511,7 +5511,6 @@ static int run(int argc, char **argv) {
 
         /* Look up the nobody user/group from offline passwd. */
         user_nobody = group_nobody = "nobody";
-        group_nobody = "nogroup";
         /* First the user */
         r = name_to_uid_offline(arg_root, user_nobody, &uid_nobody, &c.uid_cache);
         if (r < 0)
