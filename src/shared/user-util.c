@@ -56,7 +56,7 @@ int parse_uid(const char *s, uid_t *ret) {
                         r = -EINVAL;
         } else {
                 char *end = NULL;
-                unsigned long v = strtoul(s, &end, 10);
+                unsigned long long v = strtoull(s, &end, 10);
                 if (!end || *end)
                         r = -EINVAL;
                 else if (v > UINT_MAX)
