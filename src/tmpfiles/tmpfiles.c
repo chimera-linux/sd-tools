@@ -19,6 +19,7 @@
 #include <sys/ioctl.h>
 #include <sys/xattr.h>
 #include <sysexits.h>
+#include <sys/resource.h>
 #include <time.h>
 #include <unistd.h>
 
