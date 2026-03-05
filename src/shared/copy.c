@@ -3,12 +3,14 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/btrfs.h>
+#include <linux/fs.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/sendfile.h>
+#include <sys/syscall.h>
 #include <sys/xattr.h>
 #include <unistd.h>
 
@@ -908,7 +910,7 @@ static int dir_is_empty_at(int dir_fd, const char *path) {
                 struct dirent *de;
                 ssize_t n;
 
-                n = getdents(fd, buf, m);
+                n = syscall(SYS_getdents, fd, buf, m);
                 if (n < 0)
                         return -errno;
                 if (n == 0)
