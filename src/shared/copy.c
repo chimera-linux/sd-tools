@@ -910,7 +910,7 @@ static int dir_is_empty_at(int dir_fd, const char *path) {
                 struct dirent *de;
                 ssize_t n;
 
-                n = syscall(SYS_getdents, fd, buf, m);
+                n = syscall(SYS_getdents64, fd, buf, m);
                 if (n < 0)
                         return -errno;
                 if (n == 0)
